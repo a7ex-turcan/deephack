@@ -26,7 +26,8 @@ What is known (docs/firmware-analysis.md has the details):
 - The running firmware checks the size and a 16 bit sum before it stores the file. A file that arrives
   short or damaged is not stored and nothing restarts (seen in the emulator, tests/test_flash.py).
 - An upload that stopped half way leaves the firmware waiting for the rest, and it would take the next
-  picture upload for it. "dcldfinish" ends that (`end_upload`), and `send_update` sends it when it fails.
+  picture upload for it. "dcldfinish" ends that (`end_upload`); firmware updates, still images and
+  GIF frames use the same checksum-safe abort check when a transfer fails.
 - The firmware puts an upload into 2 MiB of its heap in one piece, and when there is no such piece it
   throws the upload away and says nothing. A cooler whose patch can be asked for its memory (version 4)
   is asked first (`upload_room`), and nothing is sent to one that has no room: NoRoom. Patches 3 to 14
@@ -201,10 +202,9 @@ def end_upload(driver, image: bytes, sent: int) -> bool:
     if not all(finish_is_safe(image, got) for got in (sent, min(sent + 64, len(image)))):
         return False
     try:
-        driver.dev.write(1, FINISH, 2000)
+        return driver.dev.write(1, FINISH, 2000) == len(FINISH)
     except Exception:                        # noqa: BLE001  (the cooler is gone: it has nothing half done then)
         return False
-    return True
 
 
 class NoRoom(RuntimeError):

@@ -53,6 +53,7 @@ class CoolerModel:
         self.mode: int | None = None            # device.MODE_*; None until the first CMD_MODE
         self.stills = [[f"app-still-{i}", b""] for i in range(stored_stills)]       # [file id, jpeg] by index
         self.gifs = [[f"app-gif-{i}", [], 1000] for i in range(stored_gifs)]       # [file id, frames, ms]
+        self.left_behind = {}                   # file id: frames on the card of an animation that was called off
         self.shown: tuple[str, int] | None = None   # ("jpg" | "gif", index) picked with CMD_SHOW_SLOT
         self.options: tuple[int, ...] | None = None
         self.slideshow: tuple[int, int] | None = None
@@ -304,6 +305,15 @@ class CoolerModel:
                 self._upload = None
                 self.log.append(("update given up", len(cur["data"])))
         elif data.startswith(b"dcldfinish"):
+            if up["stage"] == "data":
+                # The firmware counts the 55-byte marker as data before checking it. If those
+                # bytes complete the current file and its sum matches, that file is accepted;
+                # otherwise the unfinished upload is discarded and the staging buffer is freed.
+                missing = max(0, cur["size"] - len(cur["data"]))
+                cur["data"] += data[:missing]
+                if len(cur["data"]) == cur["size"] and device.sum16(cur["data"]) == cur["sum"] & 0xFFFF:
+                    up["files"].append(cur)
+                    up["stage"] = "header"
             self._finish(data)
         elif up["stage"] == "refused":
             pass                                            # thrown away, and nothing is said
@@ -349,6 +359,7 @@ class CoolerModel:
         self.mode = self.shown = self.drawn = self._drawing = None
         self.buffers, self.lights = False, None
         self._animated = self.stuck = False
+        self.left_behind.clear()                            # at power-on the firmware removes folders without a config.cfg
         self.log.append(("flashed", len(image)))
 
     def _finish(self, data: bytes) -> None:
@@ -356,15 +367,16 @@ class CoolerModel:
         self.drawn = self.part = None                       # the firmware leaves its upload screen and loads the stored picture
         if data != FINISH:
             self._violate("malformed dcldfinish")
-        if up["stage"] == "refused" or up["stage"] == "header" and not up["files"] and up.get("looks"):
-            self.log.append(("upload called off", up["stage"]))     # nothing arrived, or nothing was sent after a look
-            return                                                  # at the heap: the firmware leaves its upload screen
-        if up["stage"] == "data":
-            self._violate("dcldfinish before all of a file's data arrived")
-            return
         files = up["files"]
-        if not files:
-            self._violate("an upload without a file")
+        short = bool(files) and files[0]["type"] == device.FILE_GIF and len(files) != files[0]["count"]
+        if short:
+            # The firmware writes each frame to its card as it arrives. An animation that is called off is
+            # not listed and gets no config.cfg, but the frames that came whole stay in its folder until
+            # the cooler is switched on the next time (seen in the emulator, tests/test_flash.py).
+            self.left_behind[files[0]["id"]] = len(files)
+            self.flash_writes += len(files)
+        if up["stage"] in ("refused", "data") or not files or short:
+            self.log.append(("upload called off", up["stage"]))
             return
         for f in files:
             try:
@@ -381,6 +393,9 @@ class CoolerModel:
             if len(files) != 1:
                 self._violate("several stills in one upload")
             self._store(self.stills, file_id, [file_id, files[-1]["data"]], "jpg")
+        elif all(f["type"] == device.FILE_GIF for f in files) and file_id in self.left_behind:
+            self._violate("an animation sent again after half of it was left on the card: its frames go into the "
+                          "folder that is there, and the firmware lists it only after the cooler was off and on")
         elif all(f["type"] == device.FILE_GIF for f in files):
             if [f["index"] for f in files] != list(range(len(files))) or any(f["count"] != len(files) for f in files):
                 self._violate("animation frames missing or out of order")

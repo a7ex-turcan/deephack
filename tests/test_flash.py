@@ -148,6 +148,72 @@ def test_an_update_that_goes_wrong_is_not_flashed_and_can_be_called_off(stock):
     assert not any(value & 1 for value in machine.writes[WDT_CR])
 
 
+class Breaks:
+    """The emulated cooler's USB with one write that goes wrong: the data packet `at` of an upload (the
+    headers, the commands and the marker are not counted)."""
+
+    def __init__(self, usb, at: int):
+        self.usb, self.at, self.data = usb, at, 0
+
+    def write(self, endpoint, data, timeout=None):
+        data = bytes(data)
+        if not (len(data) == 64 and data[:4] == b"DCLd" or data[:2] == b"\xaa\x2e" or data.startswith(b"dcldfinish")):
+            self.data += 1
+            if self.data == self.at:
+                raise OSError("the write goes wrong")
+        return self.usb.write(endpoint, data, timeout)
+
+    def read(self, endpoint, size, timeout=None):
+        return self.usb.read(endpoint, size, timeout)
+
+
+def test_a_picture_upload_that_breaks_off_is_called_off_by_the_driver():
+    """The driver's own way out of an upload that stops (issue #19), with the firmware itself: a still,
+    then an animation in its second frame. The firmware must be back to waiting for a header each time,
+    answer commands, and store the next upload. An animation's frames are written as they arrive: the
+    one that came whole stays in a folder without a config.cfg, which the firmware removes at power-on."""
+    from PIL import Image
+
+    red, blue, green = (device.encode_jpeg(Image.new("RGB", (480, 640), colour)) for colour in ("red", "blue", "#106060"))
+    cooler = bench.EmulatedCooler()
+    driver, machine = cooler.driver(), cooler.machine
+    real = driver.dev
+    driver.set_mode(device.MODE_MOTION)
+
+    def card(of=None) -> dict:
+        return {name.lower(): content for name, content in (of or cooler).files().items()}
+
+    driver.dev = Breaks(real, 3)
+    with pytest.raises(OSError, match="goes wrong"):
+        driver.upload_jpeg("1" * 32, red)
+    driver.dev = real
+    cooler.run_for(1.0)
+    assert machine.uc.mem_read(UPLOAD_STATE, 1)[0] == 0 and card() == {}
+    assert driver.uuid() is not None                                 # it takes commands
+    driver.upload_jpeg("2" * 32, green)
+    cooler.run_for(1.0)
+    still = {f"img/000_{'2' * 32}/angle_0.jpg": green}
+    assert card() == still
+
+    driver.dev = Breaks(real, -(-len(red) // 64) + 3)                # the first frame whole, the second not
+    with pytest.raises(OSError, match="goes wrong"):
+        driver.upload_gif("3" * 32, [red, blue], 1000)
+    driver.dev = real
+    cooler.run_for(1.0)
+    left = {f"gif/000_{'3' * 32}/angle_0/index000.jpg": red}
+    assert machine.uc.mem_read(UPLOAD_STATE, 1)[0] == 0 and card() == still | left
+    driver.upload_gif("4" * 32, [blue, red], 1000)                   # the next animation is one: number 000 again,
+    cooler.run_for(1.0)                                              # for the firmware has none in its list
+    whole = {f"gif/000_{'4' * 32}/angle_0/index000.jpg": blue, f"gif/000_{'4' * 32}/angle_0/index001.jpg": red}
+    stored = card()
+    assert stored.pop(f"gif/000_{'4' * 32}/config.cfg") == b"gifrate=2\r\ngifalltime=1000\r\n"
+    assert stored == still | left | whole
+
+    again = bench.EmulatedCooler(files=cooler.files())               # off and on: what was left behind is gone
+    after = card(again)
+    assert after.pop(f"gif/000_{'4' * 32}/config.cfg") and after == still | whole
+
+
 def test_the_patched_firmware_takes_an_update_too(stock, tmp_path):
     """An update of the patch, or the way back to DeepCool's image, goes to a cooler that runs the patched
     firmware and has drawn frames."""

@@ -207,14 +207,66 @@ class Mystique:
     # -- low level -------------------------------------------------------
     def command(self, cmd: int, payload: bytes = b"", ep: int = 1, reply: bool = True) -> bytes | None:
         self.dev.write(ep, frame(cmd, payload), self.timeout)
-        if not reply:
-            return None
+        return self._read_reply(cmd, ep) if reply else None
+
+    def _read_reply(self, cmd: int, ep: int = 1) -> bytes:
         r = bytes(self.dev.read(0x80 | ep, 64, self.timeout))
         if len(r) != 48 or r[0] != 0x55 or r[2] != cmd:
             raise RuntimeError(f"unexpected reply to cmd {cmd:#04x}: {r.hex()}")
         if sum16(r[:46]) != struct.unpack_from("<H", r, 46)[0]:
             raise RuntimeError(f"bad checksum in reply to cmd {cmd:#04x}: {r.hex()}")
         return r[3:42]
+
+    def _recover_image_upload(self, image: bytes, sent: int, cause: BaseException) -> None:
+        # Imported lazily: firmware imports this module for the USB protocol helpers.
+        from . import firmware
+
+        if not firmware.end_upload(self, image, sent):
+            raise RuntimeError(
+                "the picture upload failed and the cooler could not be told that it is over; "
+                "if it is still connected, switch it off and on before the next upload"
+            ) from cause
+
+    def _start_image_upload(self, first_image: bytes) -> None:
+        # A start command that does not go out is the caller's error as it is: if it arrived all the
+        # same, the firmware waits six seconds for a header and then gives up by itself. No marker is
+        # sent after it: with no upload on, the firmware takes that packet and no command after it.
+        packet = frame(CMD_START_DOWNLOAD)
+        written = self.dev.write(1, packet, self.timeout)
+        if written != len(packet):
+            raise usb.core.USBError(f"short write of the upload-start command ({written}/{len(packet)} bytes)")
+        try:
+            self._read_reply(CMD_START_DOWNLOAD)
+        except BaseException as error:
+            self._recover_image_upload(first_image, 0, error)
+            raise
+
+    def _send_image_file(self, header: bytes, image: bytes) -> None:
+        sent = 0
+        try:
+            written = self.dev.write(1, header, self.timeout)
+            if written != len(header):
+                raise usb.core.USBError(f"short upload-header write ({written}/{len(header)} bytes)")
+            for offset in range(0, len(image), 64):
+                packet = image[offset:offset + 64]
+                written = self.dev.write(1, packet, self.timeout)
+                if isinstance(written, int):
+                    sent += max(0, min(written, len(packet)))
+                if written != len(packet):
+                    raise usb.core.USBError(f"short image-data write ({written}/{len(packet)} bytes)")
+        except BaseException as error:
+            # The last USB packet may have arrived even when the host saw an error. end_upload
+            # checks both sent and sent + 64 before deciding that dcldfinish is safe.
+            self._recover_image_upload(image, sent, error)
+            raise
+
+    def _finish_image_upload(self) -> None:
+        # A marker whose write fails may have arrived all the same, and is not sent again: a second one
+        # would come after the upload has ended, and the firmware takes no command after such a packet.
+        finish = b"dcldfinish".ljust(55, b"\0")
+        written = self.dev.write(1, finish, self.timeout)
+        if written != len(finish):
+            raise usb.core.USBError(f"short write of the final upload marker ({written}/{len(finish)} bytes)")
 
     # -- high level ------------------------------------------------------
     def uuid(self) -> str:
@@ -272,27 +324,35 @@ class Mystique:
         """Store a 480x640 baseline JPEG under file_id (overwrites if the id already exists)."""
         if jpeg[:2] != b"\xff\xd8" or jpeg[-2:] != b"\xff\xd9":
             raise ValueError("not a JPEG")
+        # Build the header before announcing an upload: invalid ids must not leave the cooler waiting.
+        header = upload_header(file_id, jpeg)
         self.make_room()
-        self.command(CMD_START_DOWNLOAD)
-        self.dev.write(1, upload_header(file_id, jpeg), self.timeout)
-        for off in range(0, len(jpeg), 64):
-            self.dev.write(1, jpeg[off:off + 64], self.timeout)
-        self.dev.write(1, b"dcldfinish".ljust(55, b"\0"), self.timeout)
+        self._start_image_upload(jpeg)
+        self._send_image_file(header, jpeg)
+        self._finish_image_upload()
         time.sleep(1.0)  # device writes to flash; the official app also waits here
 
     def upload_gif(self, file_id: str, frames: list[bytes], duration_ms: int) -> None:
         """Store an animation: a list of 480x640 JPEG frames that loops over duration_ms in total."""
         if not frames or not 0 < duration_ms <= MAX_GIF_DURATION_MS:
             raise ValueError("need at least one frame and a duration of 1..65535 ms")
-        self.make_room()
-        self.command(CMD_START_DOWNLOAD)
+        if len(frames) > 0xFFFF:
+            raise ValueError("an animation cannot have more than 65535 frames")
+
+        # Validate and build every frame header before CMD_START_DOWNLOAD. A bad later frame must
+        # not strand the cooler midway through an animation.
+        files = []
         for i, jpeg in enumerate(frames):
             if jpeg[:2] != b"\xff\xd8" or jpeg[-2:] != b"\xff\xd9":
                 raise ValueError("not a JPEG")
-            self.dev.write(1, upload_header(file_id, jpeg, FILE_GIF, len(frames), duration_ms, i), self.timeout)
-            for off in range(0, len(jpeg), 64):
-                self.dev.write(1, jpeg[off:off + 64], self.timeout)
-        self.dev.write(1, b"dcldfinish".ljust(55, b"\0"), self.timeout)
+            header = upload_header(file_id, jpeg, FILE_GIF, len(frames), duration_ms, i)
+            files.append((header, jpeg))
+
+        self.make_room()
+        self._start_image_upload(files[0][1])
+        for header, jpeg in files:
+            self._send_image_file(header, jpeg)
+        self._finish_image_upload()
         time.sleep(1.0)
 
     # -- direct drawing (patched firmware only) ---------------------------

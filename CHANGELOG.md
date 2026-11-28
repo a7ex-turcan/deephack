@@ -10,6 +10,9 @@ Settings; a newer one is offered there when the cooler has an older one.
 
 ## Unreleased
 
+- **An upload that breaks off no longer takes the next one with it.** When a picture or an animation
+  stopped on its way to the cooler, the cooler went on waiting for the rest and took the next upload for
+  it, which was lost. deephack now tells it that the upload is over. By MastahKillah.
 - **Memory of video scalers is freed more surely.** The clean-up added in 0.18.0 could be skipped when
   Python happened to be tidying up at the same moment, and then waited for the next video of a new size.
   It is asked for again now until it has run.

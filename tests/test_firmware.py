@@ -128,6 +128,28 @@ def test_dcldfinish_is_only_sent_where_it_cannot_complete_the_file():
         assert firmware.finish_is_safe(image, len(image) - left) == (device.sum16(image[-left:]) != device.sum16(tail))
 
 
+def test_image_upload_finish_marker_is_safe_at_every_packet_boundary():
+    images = [
+        device.encode_jpeg(RED),
+        device.encode_jpeg(Image.new("RGB", (480, 640), "blue")),
+    ]
+    for image in images:  # still and GIF frame data take the same firmware path
+        for sent in range(0, len(image), 64):
+            for possible in (sent, min(sent + 64, len(image))):
+                assert firmware.finish_is_safe(image, possible)
+
+
+def test_end_upload_reports_a_short_marker_write_as_failure():
+    class Device:
+        def write(self, ep, data, timeout=None):
+            return len(data) - 1
+
+    class Driver:
+        dev = Device()
+
+    assert not firmware.end_upload(Driver(), STOCK, 0)
+
+
 def test_waiting_for_the_restart():
     def looks(*seen):
         seen = list(seen)
