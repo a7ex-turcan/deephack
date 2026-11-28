@@ -200,7 +200,10 @@ Add it to `MODES` in `deephack/modes/__init__.py`. Declare `settings` on the cla
 form for you (see `weather.py`). `python -m deephack --no-device` runs the UI without touching the cooler.
 The tests run the real driver against a model of the cooler (`tests/cooler.py`) that knows the protocol's
 rules (complete uploads with matching checksums, 480x640 JPEGs, existing slots, image mode before showing
-a stored image, never the erase commands) and fails any test that breaks one.
+a stored image, never the erase commands) and fails any test that breaks one. To run them:
+`pip install -e .[dev]`, then `python -m pytest`. GitHub runs them on every pull request and on every
+push to `main` (`.github/workflows/tests.yml`). The tests that run DeepCool's firmware in the emulator
+are skipped where its image is not installed, which is everywhere but a PC with DeepCool's app.
 
 To let Auto pick the mode, set `claims` to a few words saying when it has something to show
 (`claims = "music playing"`), keep `self.active` up to date in `frame()`, and add the class to
