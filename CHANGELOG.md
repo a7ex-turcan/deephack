@@ -8,7 +8,7 @@ the release is cut.
 "Patch" is the direct drawing patch for the cooler's firmware. The app carries it and installs it from
 Settings; a newer one is offered there when the cooler has an older one.
 
-## Unreleased
+## 0.19.2 (2026-11-28)
 
 - **An upload that breaks off no longer takes the next one with it.** When a picture or an animation
   stopped on its way to the cooler, the cooler went on waiting for the rest and took the next upload for
