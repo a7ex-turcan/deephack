@@ -54,6 +54,7 @@ class CoolerModel:
         self.stills = [[f"app-still-{i}", b""] for i in range(stored_stills)]       # [file id, jpeg] by index
         self.gifs = [[f"app-gif-{i}", [], 1000] for i in range(stored_gifs)]       # [file id, frames, ms]
         self.left_behind = {}                   # file id: frames on the card of an animation that was called off
+        self.pace = {}                          # file id: ms a frame, settled when the animation's folder was made
         self.shown: tuple[str, int] | None = None   # ("jpg" | "gif", index) picked with CMD_SHOW_SLOT
         self.options: tuple[int, ...] | None = None
         self.slideshow: tuple[int, int] | None = None
@@ -211,7 +212,7 @@ class CoolerModel:
         elif cmd == device.CMD_DELETE_SLOT:
             slots = self.stills if payload[0] == device.TYPE_JPG else self.gifs
             if payload[1] < len(slots):
-                slots.pop(payload[1])
+                self.pace.pop(slots.pop(payload[1])[0], None)
             else:
                 self._violate(f"delete slot {payload[1]}, which does not exist")
         elif cmd == device.CMD_START_DOWNLOAD:
@@ -373,7 +374,14 @@ class CoolerModel:
             # The firmware writes each frame to its card as it arrives. An animation that is called off is
             # not listed and gets no config.cfg, but the frames that came whole stay in its folder until
             # the cooler is switched on the next time (seen in the emulator, tests/test_flash.py).
-            self.left_behind[files[0]["id"]] = len(files)
+            # One the firmware knows is another matter: its folder was emptied for the first frame and holds
+            # what arrived, it is listed as before, and sent again it is whole (emulator, 28 Nov 2026).
+            known = next((slot for slot in self.gifs if slot[0] == files[0]["id"]), None)
+            if known is None:
+                self.left_behind[files[0]["id"]] = len(files)
+            else:
+                pace = self.pace.get(known[0], known[2] // max(1, len(known[1])))
+                known[1:] = [[f["data"] for f in files], pace * len(files)]
             self.flash_writes += len(files)
         if up["stage"] in ("refused", "data") or not files or short:
             self.log.append(("upload called off", up["stage"]))
@@ -401,7 +409,16 @@ class CoolerModel:
                 self._violate("animation frames missing or out of order")
             if len({f["duration"] for f in files}) != 1:
                 self._violate("animation frames disagree on the loop duration")
-            self._store(self.gifs, file_id, [file_id, [f["data"] for f in files], files[0]["duration"]], "gif")
+            # The firmware writes an animation's frame count and loop time when it makes the folder, and
+            # for an id that is there only replaces the frames: it plays them at the first one's pace
+            # (read in the firmware, and seen in the emulator: tests/test_flash.py; issue #66).
+            duration = files[0]["duration"]
+            pace = duration // len(files) if duration else 100
+            was = self.pace.setdefault(file_id, pace)
+            if was != pace:
+                self._violate(f"an animation of {pace} ms a frame stored under an id that is there with {was} ms a "
+                              "frame: the firmware replaces the frames and keeps the pace")
+            self._store(self.gifs, file_id, [file_id, [f["data"] for f in files], was * len(files)], "gif")
         else:
             self._violate("stills and animation frames mixed in one upload")
         self.flash_writes += len(files)

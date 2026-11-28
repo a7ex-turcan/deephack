@@ -174,7 +174,7 @@ def test_nba_claims_around_the_picked_teams_games():
 def _engine(tmp_path, monkeypatch):
     config = Config(tmp_path / "config.json")
     config.set("slot_index", 1)                       # the model holds one still of the official app before ours
-    config.set("gif_slot_index", 0)
+    monkeypatch.setattr(engine, "_stored_count", lambda kind: {"jpg": 1, "gif": 0}[kind])     # ... and no animation
     eng = engine.Engine(config)
     clock = [1000.0]
     monkeypatch.setattr(engine.time, "monotonic", lambda: clock[0])

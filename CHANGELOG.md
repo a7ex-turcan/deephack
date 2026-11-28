@@ -8,6 +8,16 @@ the release is cut.
 "Patch" is the direct drawing patch for the cooler's firmware. The app carries it and installs it from
 Settings; a newer one is offered there when the cooler has an older one.
 
+## Unreleased
+
+- **Scene and Claude Pet each at their own pace on DeepCool's firmware.** The cooler plays whatever is
+  stored in an animation's place at the pace of the first one stored there, so whichever of the two came
+  second ran at the other's: Scene a sixth too fast, or Claude Pet a fifth too slow. Each has a place of
+  its own now. The animation an older deephack stored stays on the cooler; the README says how to
+  remove it. A cooler with the direct drawing firmware stores no animations and is not touched by this.
+- **An animation whose first upload broke off is stored at the next try.** The cooler did not take it
+  again until it had been switched off and on. deephack now sends it in a way the cooler takes.
+
 ## 0.19.2 (2026-11-28)
 
 - **An upload that breaks off no longer takes the next one with it.** When a picture or an animation

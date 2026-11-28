@@ -5,7 +5,7 @@ import pytest
 from PIL import Image
 
 from deephack import device, engine
-from deephack.config import SLOT_ID, Config
+from deephack.config import GIF_SLOT_ID, SLOT_ID, Config, gif_id
 from deephack.modes.base import Animation, Part
 
 RED, BLUE = Image.new("RGB", (480, 640), "#a02020"), Image.new("RGB", (480, 640), "#2040b0")
@@ -120,6 +120,76 @@ def test_deepcools_own_firmware_gets_its_animations_stored(tmp_path, monkeypatch
     eng = _engine(tmp_path, monkeypatch)
     _show(eng, Animation([RED, BLUE], 400))
     assert cooler.screen == ("gif", 1) and cooler.flash_writes == 2 and cooler.draws == 0 and eng._again is None
+
+
+def test_an_animation_of_another_pace_is_stored_beside_the_first_not_over_it(tmp_path, monkeypatch, cooler):
+    """The firmware settles an animation's pace when it makes its folder: what is stored under that id
+    later plays at the first one's (#66; the model says so when it is done). So each pace has an id."""
+    monkeypatch.setattr(engine, "MIN_UPLOAD_INTERVAL", 0.0)
+    cooler.gifs.append(["app-gif-0", [], 1000])
+    eng = _engine(tmp_path, monkeypatch)
+    _show(eng, Animation([RED, BLUE], 400))                               # 200 ms a frame
+    _show(eng, Animation([RED, BLUE, BLUE], 900))                         # 300
+    assert cooler.screen == ("gif", 2)
+    assert [(slot[0], len(slot[1]), slot[2]) for slot in cooler.gifs[1:]] == [(gif_id(200), 2, 400), (gif_id(300), 3, 900)]
+    _show(eng, Animation([BLUE, RED, RED, BLUE], 800))                    # 200 again, and other frames: over the first
+    assert cooler.screen == ("gif", 1) and len(cooler.gifs) == 3 and cooler.flash_writes == 9
+    assert (cooler.gifs[1][0], len(cooler.gifs[1][1]), cooler.gifs[1][2]) == (gif_id(200), 4, 800)
+    assert eng.config.get("gif_slots") == {"200": {"index": 1, "attempt": 0, "stored": True},
+                                           "300": {"index": 2, "attempt": 0, "stored": True}}
+    again = engine.Engine(Config(tmp_path / "config.json"))               # the app, started again: it knows where they are
+    again._make_mode()
+    _show(again, Animation([RED, RED, BLUE], 900))
+    assert cooler.screen == ("gif", 2) and len(cooler.gifs) == 3
+
+
+def test_the_animation_of_an_older_deephack_stays_and_the_next_goes_after_it(tmp_path, monkeypatch, cooler):
+    """Until 0.19.2 there was one, under one id, and what pace its folder has is not known."""
+    cooler.gifs += [["app-gif-0", [], 1000], [GIF_SLOT_ID, [b"an older one"], 2400]]
+    config = Config(tmp_path / "config.json")
+    config.set("gif_slot_index", 1)
+    eng = _engine(tmp_path, monkeypatch)
+    _show(eng, Animation([RED, BLUE], 400))
+    assert cooler.screen == ("gif", 2) and cooler.gifs[1] == [GIF_SLOT_ID, [b"an older one"], 2400]
+    assert cooler.gifs[2][0] == gif_id(200) and eng.config.get("gif_slot_index") == 1
+
+
+def test_a_first_upload_that_breaks_off_is_not_tried_under_its_id_again(tmp_path, monkeypatch, cooler):
+    """It leaves a folder the firmware does not list, and what is sent into that later is not listed
+    either, until the cooler was off and on (#67; the model says so when it is done)."""
+    monkeypatch.setattr(engine, "MIN_UPLOAD_INTERVAL", 0.0)
+    monkeypatch.setattr(engine, "REOPEN_INTERVAL", 0.0)
+    cooler.gifs.append(["app-gif-0", [], 1000])
+    eng = _engine(tmp_path, monkeypatch)
+    whole, packets = cooler.write, [0]
+
+    def breaks(ep, data, timeout=None):
+        current = (cooler._upload or {}).get("current", {})
+        if current.get("index") == 1 and not bytes(data).startswith(b"dcldfinish"):
+            packets[0] += 1
+            if packets[0] == 3:                                           # the second frame's third packet
+                raise RuntimeError("the cable")
+        return whole(ep, data, timeout)
+
+    monkeypatch.setattr(cooler, "write", breaks)
+    _show(eng, Animation([RED, BLUE], 400), steps=1)
+    assert eng._dev is None and cooler.left_behind == {gif_id(200): 1} and len(cooler.gifs) == 1
+    assert eng.config.get("gif_slots") == {"200": {"index": 1, "attempt": 1, "stored": False}}
+
+    monkeypatch.setattr(cooler, "write", whole)
+    for _ in range(3):
+        eng._device_step(True)
+    assert cooler.screen == ("gif", 1) and cooler.gifs[1][0] == gif_id(200, 1) != gif_id(200)
+    assert eng.config.get("gif_slots") == {"200": {"index": 1, "attempt": 1, "stored": True}}
+
+    monkeypatch.setattr(cooler, "write", breaks)                          # one that is there: the same id heals it
+    packets[0] = 0
+    _show(eng, Animation([BLUE, RED], 400), steps=1)
+    assert eng._dev is None and eng.config.get("gif_slots") == {"200": {"index": 1, "attempt": 1, "stored": True}}
+    monkeypatch.setattr(cooler, "write", whole)
+    for _ in range(3):
+        eng._device_step(True)
+    assert cooler.screen == ("gif", 1) and cooler.gifs[1][0] == gif_id(200, 1) and len(cooler.gifs) == 2
 
 
 def test_a_picture_that_cannot_be_drawn_yet_is_tried_again_soon(tmp_path, monkeypatch, cooler):

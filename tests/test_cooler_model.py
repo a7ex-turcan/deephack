@@ -163,6 +163,24 @@ def test_an_interrupted_gif_upload_is_no_animation_but_leaves_its_whole_frames(c
     assert cooler.gifs == [] and any("after half of it was left" in v for v in again)
 
 
+def test_an_animation_stored_under_an_id_that_is_there_keeps_the_first_ones_pace(cooler):
+    """The firmware writes the frame count and the loop's time when it makes the folder, and for an id that
+    is there it replaces the frames and nothing else (#66)."""
+    blue = device.encode_jpeg(Image.new("RGB", (480, 640), "blue"))
+    with device.Mystique() as m:
+        m.upload_gif("7" * 32, [JPEG, blue], 1000)                        # 500 ms a frame
+        m.upload_gif("7" * 32, [blue, JPEG, blue, JPEG], 2000)            # the same pace: nothing wrong
+    assert len(cooler.gifs) == 1 and len(cooler.gifs[0][1]) == 4 and cooler.gifs[0][2] == 2000
+    seen = _violations(cooler, lambda m: m.upload_gif("7" * 32, [JPEG, blue, JPEG], 600))
+    assert any("keeps the pace" in v for v in seen)
+    assert len(cooler.gifs[0][1]) == 3 and cooler.gifs[0][2] == 1500      # three frames, at 500 ms each
+    with device.Mystique() as m:
+        m.set_mode(device.MODE_MOTION)
+        m.delete_slot(0, device.TYPE_GIF)                                 # gone, folder and all: the id is new again
+        m.upload_gif("7" * 32, [JPEG, blue, JPEG], 600)
+    assert cooler.gifs[0][2] == 600
+
+
 def test_a_short_write_is_an_error_of_usb_and_the_upload_is_called_off(cooler, monkeypatch):
     """The engine lets go of the cooler on usb.core.USBError and RuntimeError and on nothing else: a write
     that took fewer bytes than it was given must be one of them."""

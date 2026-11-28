@@ -21,7 +21,7 @@ from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 
 from . import device, firmware, light, render, ytdlp
-from .config import GIF_SLOT_ID, SLOT_ID, Config, book_id
+from .config import SLOT_ID, Config, book_id, gif_id
 from .modes import BY_ID, MODES, Mode
 from .modes.base import Animation, Dashboard, Flipbook, Part
 
@@ -80,6 +80,12 @@ def _stored_count(kind: str) -> int:
     """
     base = Path(os.environ.get("APPDATA", "")) / "DeepCool" / "Pictures"
     return sum(1 for p in base.glob(f"*/{kind}/*") if p.is_dir())
+
+
+def frame_ms(animation: Animation) -> int:
+    """How long each of its frames is on, as the firmware works it out: the loop's time by its frames, in
+    whole ms, and 100 when the loop has no time."""
+    return animation.duration_ms // len(animation.frames) if animation.duration_ms else 100
 
 
 def digest(frame: Image.Image | Animation) -> bytes:
@@ -146,7 +152,8 @@ class Engine(QThread):
         self._uploaded_seq = -1
         self._last_upload = 0.0
         self._last_upload_wall: float | None = None
-        self._slot_digest: dict[int, bytes] = {}      # slot type -> digest of what we last stored in it
+        self._slot_digest: dict = {}                  # slot type -> digest of what we last stored in it (for an
+                                                      # animation: (slot type, ms a frame), see _animation_slot)
         self._frame_digest: tuple[int, bytes] | None = None   # (frame seq, digest), computed once per frame
         self._dev: device.Mystique | None = None
         self._dev_state = "missing" if use_device else "preview"   # connected | busy | missing | preview
@@ -462,22 +469,22 @@ class Engine(QThread):
                 slot = device.TYPE_GIF if animated else device.TYPE_JPG
                 if self._frame_digest is None or self._frame_digest[0] != self._frame_seq:
                     self._frame_digest = (self._frame_seq, digest(self._frame))
-                stored = self._slot_digest.get(slot) == self._frame_digest[1]
+                place = (slot, frame_ms(self._frame)) if animated else slot
+                stored = self._slot_digest.get(place) == self._frame_digest[1]
                 if not stored and now - self._last_upload < MIN_UPLOAD_INTERVAL:
                     return
-                key, kind = ("gif_slot_index", "gif") if animated else ("slot_index", "jpg")
-                index = self.config.get(key)
-                if index is None:
-                    index = _stored_count(kind)
-                    self.config.set(key, index)
-                if not stored:            # e.g. Auto switching back to an unchanged image: just show it again
-                    if animated:
-                        frames = [device.encode_jpeg(f, quality=88) for f in self._frame.frames]
-                        self._dev.upload_gif(GIF_SLOT_ID, frames, self._frame.duration_ms)
-                    else:
+                if animated:
+                    index = self._animation_slot(self._frame, send=not stored)
+                else:
+                    index = self.config.get("slot_index")
+                    if index is None:
+                        index = _stored_count("jpg")
+                        self.config.set("slot_index", index)
+                    if not stored:
                         self._dev.upload_jpeg(SLOT_ID, device.encode_jpeg(self._frame))
                         self.config.set("ground", False)
-                    self._slot_digest[slot] = self._frame_digest[1]
+                if not stored:            # (stored: e.g. Auto switching back to an unchanged image: just show it again)
+                    self._slot_digest[place] = self._frame_digest[1]
                     self._last_upload = time.monotonic()
                     self._veiled = False          # after an upload the firmware loads the stored picture afresh
                 self._ours = (slot, index)
@@ -491,6 +498,35 @@ class Engine(QThread):
         except (usb.core.USBError, RuntimeError):
             traceback.print_exc()
             self._drop_device()
+
+    def _animation_slot(self, animation: Animation, send: bool) -> int:
+        """Where the animation of this one's pace is among those stored on the cooler; `send`: store this one
+        there first.
+
+        The firmware settles an animation's pace when it makes its folder, and never again: what is stored
+        under an id that is there plays at the first one's (#66). So deephack keeps an animation for each
+        pace (`config.gif_id`): two of them as the modes are, Scene's and Claude Pet's. And a folder whose
+        first upload broke off is one the firmware does not list, nor what is sent into it later, until the
+        cooler was off and on (#67): before a first upload goes out it is written down that its id is used
+        up, and only one that arrived whole takes that back."""
+        each = str(frame_ms(animation))
+        slots = dict(self.config.get("gif_slots") or {})
+        slot = dict(slots.get(each) or {})
+        if "index" not in slot:                  # after the official app's, the one of before 0.19.2 and our others
+            before = self.config.get("gif_slot_index")
+            ours = [-1 if before is None else before] + [s["index"] for s in slots.values() if "index" in s]
+            slot["index"] = max([_stored_count("gif") - 1] + ours) + 1
+        if send:
+            frames = [device.encode_jpeg(f, quality=88) for f in animation.frames]
+            attempt, first = int(slot.get("attempt", 0)), not slot.get("stored")
+            if first:
+                slots[each] = {"index": slot["index"], "attempt": attempt + 1, "stored": False}
+                self.config.set("gif_slots", slots)
+            self._dev.upload_gif(gif_id(int(each), attempt), frames, animation.duration_ms)
+            if first:
+                slots[each] = {"index": slot["index"], "attempt": attempt, "stored": True}
+                self.config.set("gif_slots", slots)
+        return slot["index"]
 
     def _show_stored(self, index: int, slot: int, afresh: bool = False) -> None:
         """Show a stored image or animation, first leaving a sensor screen if one is up.

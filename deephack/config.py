@@ -10,7 +10,21 @@ from . import APP_NAME
 
 # Fixed id of our image slot on the device; uploading to the same id overwrites in place.
 SLOT_ID = "0de3b4c4" + "0" * 23 + "1"
-GIF_SLOT_ID = "0de3b4c4" + "0" * 23 + "2"     # same idea for animations, which the device stores separately
+GIF_SLOT_ID = "0de3b4c4" + "0" * 23 + "2"     # the one animation deephack stored until 0.19.2: see gif_id
+
+
+def gif_id(frame_ms: int, attempt: int = 0) -> str:
+    """File id of deephack's animation whose frames are on for that long each.
+
+    An id that is on the cooler has its frames replaced and nothing else: the firmware writes how many
+    frames there are and how long the loop is when it makes the animation's folder, and plays whatever is
+    stored under that id later at the first one's pace. So there is an id for each pace, and what is stored
+    again under it has that pace. (Issue #66; docs/firmware-analysis.md, "Upload and storage".)
+
+    `attempt`: a first upload that breaks off leaves a folder which the firmware does not list, and into
+    which the same id goes without being listed either, until the cooler was off and on (#67). So the next
+    try has another id."""
+    return "0de3b4c4" + "0" * 16 + f"a{attempt & 0xFFF:03x}{frame_ms & 0xFFFF:04x}"
 
 
 
@@ -33,7 +47,10 @@ DEFAULTS = {
     "brightness": 70,          # screen backlight, percent (70 is what the official app sends)
     "slot_index": None,        # index of our image among the JPGs stored on the device
     "ground": False,           # True: that image is the plain one frames are drawn over (direct drawing firmware)
-    "gif_slot_index": None,    # index of our animation among the GIFs stored on the device
+    "gif_slot_index": None,    # index of the animation stored under GIF_SLOT_ID (until 0.19.2), if there is one:
+                               # it stays where it is, and what is stored now goes after it
+    "gif_slots": {},           # our animations on the device, by ms a frame: {"250": {"index": among the GIFs
+                               # there, "attempt": of gif_id, "stored": True once one was stored whole}}
     "restore_index": 0,        # JPG shown when deephack is paused or quits
     "book": None,              # the flipbook stored on the device: {"key", "first" (index of frame 0), "count"}
     "firmware_wanted": None,   # "direct" | "stock": a firmware update the cooler had no room for, to be sent when it

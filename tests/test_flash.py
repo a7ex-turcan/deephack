@@ -214,6 +214,69 @@ def test_a_picture_upload_that_breaks_off_is_called_off_by_the_driver():
     assert after.pop(f"gif/000_{'4' * 32}/config.cfg") and after == still | whole
 
 
+def test_an_animation_sent_under_an_id_that_is_there_keeps_the_first_ones_pace():
+    """Issues #66 and #67, with the firmware itself. It writes an animation's frame count and loop time
+    (config.cfg, and its list in memory) when it makes the folder; for an id whose folder is there it
+    replaces the frames and nothing else. Its player counts the frames by their files and takes the time
+    of each from the list: the new frames, at the first animation's pace. Another id has its own."""
+    from PIL import Image
+    from unicorn import UC_HOOK_BLOCK
+    from unicorn.arm_const import UC_ARM_REG_R1
+
+    from deephack.config import gif_id
+
+    red, blue, green = (device.encode_jpeg(Image.new("RGB", (480, 640), colour)) for colour in ("red", "blue", "#106060"))
+    f_open, one, other = 0x40ED8, "5" * 32, gif_id(200)
+
+    def reads(cooler) -> list:
+        """(the firmware's ms, name) of every frame file it opens from now on."""
+        seen, machine = [], cooler.machine
+
+        def opened(uc, address, size, data):
+            path = bytes(uc.mem_read(uc.reg_read(UC_ARM_REG_R1), 100)).split(b"\0")[0].decode("latin1")
+            if "/index" in path:
+                seen.append((machine.ticks, path.rsplit("/", 2)[0][-32:] + path[-7:-4]))
+
+        machine.uc.hook_add(UC_HOOK_BLOCK, opened, begin=f_open, end=f_open)
+        return seen
+
+    def played(cooler, seen: list, index: int, seconds: float) -> tuple:
+        """Which frames it showed of the animation of that number, and the ms from each to the next."""
+        del seen[:]
+        cooler.driver().show_slot(index, device.TYPE_GIF)
+        cooler.run_for(seconds)
+        return [name[-3:] for at, name in seen], {b[0] - a[0] for a, b in zip(seen[1:], seen[2:])}
+
+    def near(gaps: set, ms: int) -> bool:
+        return bool(gaps) and all(abs(gap - ms) <= 3 for gap in gaps)
+
+    cooler = bench.EmulatedCooler()
+    driver, seen = cooler.driver(), reads(cooler)
+    driver.set_mode(device.MODE_MOTION)
+    driver.upload_gif(one, [red, blue], 1000)
+    driver.upload_gif(one, [green, red, blue], 600)                  # 200 ms a frame, were it a new one
+    folder = f"gif/000_{one}"
+    card = {name.lower(): content for name, content in cooler.files().items()}
+    assert card == {f"{folder}/config.cfg": b"gifrate=2\r\ngifalltime=1000\r\n", f"{folder}/angle_0/index000.jpg": green,
+                    f"{folder}/angle_0/index001.jpg": red, f"{folder}/angle_0/index002.jpg": blue}
+    frames, gaps = played(cooler, seen, 0, 2.6)
+    assert set(frames) == {"000", "001", "002"} and near(gaps, 500)  # all three, at the two frames' pace
+
+    driver.upload_gif(other, [green, red, blue], 600)                # under an id of its own
+    card = {name.lower(): content for name, content in cooler.files().items()}
+    assert card[f"gif/001_{other}/config.cfg"] == b"gifrate=3\r\ngifalltime=600\r\n"
+    frames, gaps = played(cooler, seen, 1, 1.5)
+    assert set(frames) == {"000", "001", "002"} and near(gaps, 200)
+
+    again = bench.EmulatedCooler(files=cooler.files())               # off and on: it reads config.cfg, and nothing changes
+    again.driver().set_mode(device.MODE_MOTION)
+    seen = reads(again)
+    frames, gaps = played(again, seen, 0, 2.6)
+    assert set(frames) == {"000", "001", "002"} and near(gaps, 500)
+    frames, gaps = played(again, seen, 1, 1.5)
+    assert set(frames) == {"000", "001", "002"} and near(gaps, 200)
+
+
 def test_the_patched_firmware_takes_an_update_too(stock, tmp_path):
     """An update of the patch, or the way back to DeepCool's image, goes to a cooler that runs the patched
     firmware and has drawn frames."""

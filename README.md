@@ -129,12 +129,15 @@ How it is done is at the head of [`deephack/update.py`](deephack/update.py).
   of once per track. Showing an image the cooler already holds again (Auto switching back to it) costs
   no write.
 - **deephack adds files the DeepCool app does not know about:** one image (a black one on the direct
-  drawing firmware), one animation once you use
-  Claude Pet or Scene on DeepCool's own firmware, and up to seven more images once you use Visualizer there
+  drawing firmware), an animation each for
+  Claude Pet and Scene once you use them on DeepCool's own firmware (the cooler plays what is stored in
+  an animation's place at the pace of the first one stored there, and the two differ), and up to seven more images once you use Visualizer there
   (the cooler keeps about nine in all, so it takes whatever room your own pictures leave). They are stored after the JPGs / GIFs you uploaded with the official app. If you later add
   files there, its numbering will be off by one. `python -m deephack.device delete <index>` (add `--gif`
-  for the animation) removes them; the indexes are `slot_index` and `gif_slot_index` in
-  `%APPDATA%\deephack\config.json`.
+  for an animation) removes them; the indexes are `slot_index` and those under `gif_slots` in
+  `%APPDATA%\deephack\config.json`. (`gif_slot_index` there is the one animation deephack stored until
+  0.19.2. It is not used any more and stays on the cooler until you remove it. Remove the one with the
+  highest index first: the ones after it move down by one.)
 - Only the MYSTIQUE (USB `3633:0009`, 480x640 portrait) is supported. The MYSTIQUE PLUS appears to share
   much of the protocol but is untested.
 

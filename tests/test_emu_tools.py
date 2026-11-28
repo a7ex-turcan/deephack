@@ -21,6 +21,16 @@ def test_fat_image_reads_back_what_was_put_in():
     assert fat.read(fat.build(files)) == files
 
 
+def test_a_short_name_in_small_letters_is_read_as_it_was_written():
+    """The firmware's FatFs writes "index000.jpg" as INDEX000.JPG and two bits. Its player counts the
+    frames of an animation by their names, so a card built from the names in capitals plays one frame."""
+    image = bytearray(fat.build({"INDEX000.JPG": b"a frame", "CONFIG.CFG": b"x"}))
+    image[image.index(b"INDEX000JPG") + 12] = 0x18                 # stem and ending in small letters
+    image[image.index(b"CONFIG  CFG") + 12] = 0x10                 # the ending only
+    assert fat.read(bytes(image)) == {"index000.jpg": b"a frame", "CONFIG.cfg": b"x"}
+    assert fat.read(fat.build(fat.read(bytes(image)))) == fat.read(bytes(image))
+
+
 def test_fat_image_is_a_fat16_volume():
     image = fat.build({"A.TXT": b"a"}, megabytes=16)
     assert len(image) == 16 * 1024 * 1024

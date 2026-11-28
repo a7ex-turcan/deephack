@@ -171,11 +171,29 @@ sum, then writes it to the filesystem in 4 KiB chunks. This is true for every fi
   then: the next one, under another id, is number 000 as well, and whole. The **same** id sent again,
   whole, goes into the folder that is there and gets no `config.cfg` either: it is not an animation
   until the cooler has been off and on, for at power-on the firmware removes a folder that has no
-  `config.cfg`, and the id is stored like a new one after that.
-- **An id that is on the card keeps its `config.cfg`.** *Seen in the emulator, and not looked into:* an
-  animation of 2 frames in 1000 ms, then the same id with 3 frames in 600: the three new frames are on
-  the card, and `config.cfg` still says `gifrate=2` and `gifalltime=1000`. What the cooler plays then,
-  before and after it was switched off, is open: deephack stores all its animations under one id.
+  `config.cfg`, and the id is stored like a new one after that. An animation the firmware knows is
+  another matter: when its replacement stops, its folder holds the frames that arrived, it is listed as
+  before, and sent again it is whole.
+- **An id that is on the card has its frames replaced, and nothing else.** *Read in the code, and seen
+  in the emulator* (`tests/test_flash.py`). When the file of an animation's frame is to be written, the
+  firmware makes its path (around `0x2BCB4`). For frame 0 it looks through `SD:GIF` for a folder whose
+  name after `NNN_` is the id.
+  - None is there: it makes `NNN_<id>`, NNN being the number of animations it knows. After the last
+    frame `FUN_0003c008` adds the animation to its list (at `0x20005225`, 0x6B bytes each: path, frame
+    count, the loop's ms, ms a frame; how many there are is at `0x20005A34 + 0x7D`) and writes
+    `config.cfg`.
+  - One is there: it empties that folder's `angle_0` and sets a flag (`+0x75` in its copy of the
+    header). After the last frame the flag is all it looks at (`0x2E3E0`): neither the list nor
+    `config.cfg` is touched.
+
+  The player (`0x70C40`) counts the frame files in the folder on every tick, and takes the time of a
+  frame from the list: the loop's ms by the frame count, both the first animation's. So what is stored
+  again plays **its own frames at the first one's pace**, before and after a power-on: 2 frames in
+  1000 ms, then 3 in 600 under the same id, are three frames of 500 ms each. It is also why the folder
+  of a first upload that broke off is never listed: it is there. `09` removes an animation's folder and
+  its place in the list, and numbers the folders after it anew; its id is a new one after that.
+  deephack has an id for each pace (`config.gif_id`), and gives an id up whose first upload did not
+  arrive whole (issues #66 and #67).
 - **`dcldfinish` with no upload on is a stray packet.** *Seen in the emulator:* the firmware takes it
   and answers no command after it (ten seconds of its time were waited). It is the endpoint that is not
   armed again after a packet that is not a command (see "The USB device controller"): only the upload

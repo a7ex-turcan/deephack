@@ -50,7 +50,12 @@ def _entries(name: str, taken: set[bytes], attr: int, cluster: int, size: int) -
 
 def read(image: bytes) -> dict[str, bytes]:
     """The files on a FAT16 volume, as {path: content} (the reverse of build; long names are used
-    where a file has one)."""
+    where a file has one).
+
+    A short name is in capitals on the disk, with two bits beside it that say its stem or its ending is
+    in small letters: that is how the firmware's FatFs writes "index000.jpg". They are read here, since
+    the firmware cares: it counts an animation's frames by their names, and with INDEX000.JPG it counts
+    none and shows the first frame for ever (seen 28 Nov 2026, with a card built from what this gave)."""
     sector, cluster_sectors, reserved, fats, root_entries = struct.unpack_from("<HBHBH", image, 11)
     fat_sectors = struct.unpack_from("<H", image, 22)[0]
     root_start = (reserved + fats * fat_sectors) * sector
@@ -84,6 +89,7 @@ def read(image: bytes) -> dict[str, bytes]:
             long_parts = []
             if not name:
                 stem, ext = e[0:8].decode("latin1").rstrip(), e[8:11].decode("latin1").rstrip()
+                stem, ext = stem.lower() if e[12] & 0x08 else stem, ext.lower() if e[12] & 0x10 else ext
                 name = f"{stem}.{ext}" if ext else stem
             if e[11] & 0x08 or name in (".", ".."):
                 continue
