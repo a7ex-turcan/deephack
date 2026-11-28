@@ -1,6 +1,9 @@
+import threading
+import time
+
 import pytest
 
-from deephack import device, update, ytdlp
+from deephack import device, filters, update, ytdlp
 from deephack.modes import claude_usage
 
 from cooler import CoolerModel   # tests/ is on sys.path (pytest rootdir-relative imports)
@@ -35,6 +38,44 @@ def no_real_updates(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(update, "config_dir", lambda: empty)
     monkeypatch.setattr(update, "fetch", no_net)
     monkeypatch.delenv(update.FEED_ENV, raising=False)
+
+
+@pytest.fixture
+def collector(monkeypatch):
+    """For a test that counts what the collector frees after `filters.dropped()`: the run that is sent for
+    waits until the test says `run()`.
+
+    Counting is `gc.get_objects()`, which holds every object there is for as long as the count takes, and a
+    run of the collector in that moment frees none of them. There is one run for a drop, so they stay. A
+    test of the graphs failed that way in a release's build (28 Nov 2026), and its body did 11 times in 30
+    with half a million objects about, which a whole run of the tests has. So the test counts first, lets
+    the run through, and counts again when it is over."""
+    whole, go, ran = filters.collect_now, threading.Event(), threading.Event()
+
+    def collect_now() -> bool:
+        go.wait(10)
+        done = whole()
+        if done:
+            ran.set()
+        return done
+
+    class Collector:
+        @staticmethod
+        def now() -> None:
+            """A run here and now, and a whole one: one that another thread is in the middle of is waited for."""
+            until = time.monotonic() + 10
+            while not whole() and time.monotonic() < until:
+                time.sleep(0.01)
+
+        @staticmethod
+        def run(within: float = 5.0) -> bool:
+            """Let the run through that was sent for. False when none came: nobody said `dropped()`."""
+            go.set()
+            return ran.wait(within)
+
+    monkeypatch.setattr(filters, "collect_now", collect_now)
+    yield Collector
+    go.set()                                     # whoever still waits here goes on, with the real thing
 
 
 @pytest.fixture

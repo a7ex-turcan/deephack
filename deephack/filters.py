@@ -13,7 +13,9 @@ one run, and in a thread of its own, since a run is 20 to 100 ms in which nothin
 Python lets one thread collect at a time, and a second that asks while the first is at it is sent away
 with nothing done and nothing said (`gc.collect()` gives 0 at once). What was dropped since the first
 began would then wait for the next drop, or for ever. So a run that did not happen is asked for again.
-(Seen as a test that failed once in a release's build, 27 Nov 2026, and then made to happen here.)
+(Looked for when a test of the graphs failed in a release's build, 27 Nov 2026, and made to happen here.
+What failed that test, and again the day after, was more likely its own counting: `collector` in
+tests/conftest.py.)
 """
 from __future__ import annotations
 

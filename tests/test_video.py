@@ -259,7 +259,7 @@ def test_videos_of_many_sizes_leave_no_threads_behind():
     assert native_threads() - before <= 4                    # (a thread or two of Python's own may come and go)
 
 
-def test_filters_that_are_dropped_are_freed_soon_not_whenever_python_gets_to_it(monkeypatch):
+def test_filters_that_are_dropped_are_freed_soon_not_whenever_python_gets_to_it(monkeypatch, collector):
     """A graph of filters and its filters hold each other, so one that is dropped waits for Python's
     collector, and one that has lived for a while waits long: 66 MB of them after three hours of TikTok,
     0.7 MB a graph (#58). The collector is sent for."""
@@ -282,7 +282,7 @@ def test_filters_that_are_dropped_are_freed_soon_not_whenever_python_gets_to_it(
     monkeypatch.setattr(filters, "AFTER", 0.05)
     with video._graphs_lock:
         video._graphs.clear()
-    gc.collect()
+    collector.now()
     others = graphs()                            # (of other tests, should they still be about)
     gc.disable()                                 # nothing but the run that is sent for: by itself the collector may
     try:                                         # happen to come by in a test, which it did not in a night of TikTok
@@ -290,9 +290,8 @@ def test_filters_that_are_dropped_are_freed_soon_not_whenever_python_gets_to_it(
         assert graphs() - others == 9
         see([(640, 320)])                        # one more than are kept: the nine are dropped
         assert len(video._graphs) == 1
-        until = time.monotonic() + 5
-        while graphs() - others > 1 and time.monotonic() < until:
-            time.sleep(0.02)
+        assert graphs() - others == 10           # they wait for the collector, which was sent for ...
+        assert collector.run()                   # ... (and held until here: counting them is in its way)
         assert graphs() - others == 1
     finally:
         gc.enable()

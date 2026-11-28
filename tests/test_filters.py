@@ -31,8 +31,7 @@ class Slow:
 
 def test_a_run_that_python_did_not_make_is_asked_for_again(monkeypatch):
     """Python lets one thread collect at a time, and gives a second that asks meanwhile nothing, without
-    a word. A graph dropped while another collection was at work stayed until the next drop: a test of
-    the graphs failed that way once in a release's build."""
+    a word. A graph dropped while another collection was at work stayed until the next drop."""
     monkeypatch.setattr(filters, "AFTER", 0.05)
     monkeypatch.setattr(filters, "AGAIN", 0.05)
     gc.collect()
